@@ -6,6 +6,8 @@ use axum::{
 };
 use chrono::Utc;
 use common::*;
+use rand::seq::SliceRandom;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub mod customer_proto {
@@ -21,7 +23,8 @@ use product_proto::product_database_client::ProductDatabaseClient;
 
 #[derive(Clone)]
 struct AppState {
-    customer_db_addr: String,
+    customer_db_replicas: Vec<String>,
+    current_replica: Arc<Mutex<usize>>,
     product_db_addr: String,
     financial_tx_addr: String,
 }
@@ -29,9 +32,34 @@ struct AppState {
 async fn get_customer_client(
     state: &AppState,
 ) -> Result<CustomerDatabaseClient<tonic::transport::Channel>, String> {
-    CustomerDatabaseClient::connect(format!("http://{}", state.customer_db_addr))
-        .await
-        .map_err(|e| format!("Failed to connect to customer DB: {}", e))
+    let replicas = &state.customer_db_replicas;
+    let n = replicas.len();
+
+    // Determine starting index under the lock, then release it before doing I/O.
+    let start_idx = {
+        let guard = state.current_replica.lock().unwrap();
+        *guard
+    };
+
+    // Try current replica first, then the rest in random order.
+    let mut remaining: Vec<usize> = (0..n).filter(|&i| i != start_idx).collect();
+    remaining.shuffle(&mut rand::thread_rng());
+    let order = std::iter::once(start_idx).chain(remaining);
+
+    for idx in order {
+        let addr = format!("http://{}", replicas[idx]);
+        match CustomerDatabaseClient::connect(addr).await {
+            Ok(client) => {
+                *state.current_replica.lock().unwrap() = idx;
+                return Ok(client);
+            }
+            Err(_) => {
+                eprintln!("[CustomerDB] Replica {} unreachable, trying another", idx);
+            }
+        }
+    }
+
+    Err("All customer DB replicas are unreachable".to_string())
 }
 
 async fn get_product_client(
@@ -836,15 +864,30 @@ async fn call_financial_transactions(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr =
         std::env::var("BUYER_SERVER_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8083".to_string());
-    let customer_db_addr =
-        std::env::var("CUSTOMER_DB_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".to_string());
+    // Comma-separated list of customer DB replica addresses, e.g.
+    // "127.0.0.1:50051,127.0.0.1:50052,127.0.0.1:50053,127.0.0.1:50054,127.0.0.1:50055"
+    let customer_db_replicas: Vec<String> = std::env::var("CUSTOMER_DB_ADDRS")
+        .unwrap_or_else(|_| {
+            "127.0.0.1:50051,127.0.0.1:50052,127.0.0.1:50053,127.0.0.1:50054,127.0.0.1:50055"
+                .to_string()
+        })
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     let product_db_addr =
         std::env::var("PRODUCT_DB_ADDR").unwrap_or_else(|_| "127.0.0.1:50052".to_string());
     let financial_tx_addr = std::env::var("FINANCIAL_TX_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8085".to_string());
 
+    println!(
+        "Customer DB replicas: {:?}",
+        customer_db_replicas
+    );
+
     let state = AppState {
-        customer_db_addr,
+        customer_db_replicas,
+        current_replica: Arc::new(Mutex::new(0)),
         product_db_addr,
         financial_tx_addr,
     };

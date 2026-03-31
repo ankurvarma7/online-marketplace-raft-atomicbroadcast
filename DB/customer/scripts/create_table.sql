@@ -1,0 +1,25 @@
+CREATE DATABASE IF NOT EXISTS customer_db;
+USE customer_db;
+
+CREATE TABLE IF NOT EXISTS sellers (
+    id VARCHAR(36) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    thumbs_up INT NOT NULL DEFAULT 0,
+    thumbs_down INT NOT NULL DEFAULT 0,
+    items_sold INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS buyers (
+    id VARCHAR(36) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    items_purchased INT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    user_type VARCHAR(32) NOT NULL,
+    expiration BIGINT NOT NULL
+);

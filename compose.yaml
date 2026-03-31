@@ -1,0 +1,45 @@
+services:
+  customerdb_0:
+    build:
+      context: ./DB/customer
+      dockerfile: Dockerfile
+    container_name: customerdb_0
+    restart: unless-stopped
+    ports:
+      - "8000:3306"
+
+  customerdb_1:
+    build:
+      context: ./DB/customer
+      dockerfile: Dockerfile
+    container_name: customerdb_1
+    restart: unless-stopped
+    ports:
+      - "8001:3306"
+
+  customerdb_2:
+    build:
+      context: ./DB/customer
+      dockerfile: Dockerfile
+    container_name: customerdb_2
+    restart: unless-stopped
+    ports:
+      - "8002:3306"
+
+  customerdb_3:
+    build:
+      context: ./DB/customer
+      dockerfile: Dockerfile
+    container_name: customerdb_3
+    restart: unless-stopped
+    ports:
+      - "8003:3306"
+
+  customerdb_4:
+    build:
+      context: ./DB/customer
+      dockerfile: Dockerfile
+    container_name: customerdb_4
+    restart: unless-stopped
+    ports:
+      - "8004:3306"

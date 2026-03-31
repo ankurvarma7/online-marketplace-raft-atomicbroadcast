@@ -74,7 +74,9 @@ Start each component in a separate terminal:
 
 # Terminal 4: Buyer Server (REST)
 ./target/release/buyer_server
-
+To override the replica list at runtime:                                                                          
+  CUSTOMER_DB_ADDRS="host1:50051,host2:50051,host3:50051,host4:50051,host5:50051" ./buyer_server
+  
 # Terminal 5: Financial Transactions (SOAP)
 ./target/release/financial_transactions
 ```

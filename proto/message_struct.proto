@@ -1,0 +1,97 @@
+syntax = "proto3";
+import "customer_db.proto";
+
+message GeneralMessage {
+    oneof message_type {
+      RequestMessage request_message = 1;
+      ServiceMessage service_message = 2;
+      RetransmitRequestMessage retransmit_request_message = 3;
+      RetransmitServiceMessage retransmit_service_message = 4;
+    }
+}
+
+message RequestMessage {
+    // sender of the request message
+    int32 sender_id = 1;
+    // local sequence number of the sender of the request message
+    int32 local_sequence_num = 2;
+    //will not use it for now, but if needed (uuid probably)
+    int32 request_id = 3;
+    // payload of the request — only write (state-changing) operations are broadcast
+    oneof request_body {
+        customer_db.CreateSellerRequest  create_seller_request  = 4;
+        customer_db.CreateBuyerRequest   create_buyer_request   = 5;
+        customer_db.UpdateSellerRequest  update_seller_request  = 7;
+        customer_db.UpdateBuyerRequest   update_buyer_request   = 8;
+        customer_db.CreateSessionRequest create_session_request = 9;
+        customer_db.DeleteSessionRequest delete_session_request = 10;
+        customer_db.ResetRequest         reset_all_request      = 11;
+    }
+
+    //optional, will not use for now
+    RequestMetadata metadata = 6;
+}
+
+
+message RequestMetadata {
+    int32 global_sequence = 1;
+
+}
+
+message ServiceMessage {
+    // id of the original request message
+    int32 source_node_id = 1;
+    // local sequence number of the original request 
+    int32 local_seq_num = 2;
+    // don't need it for now, but it will be the original request id.
+    int32 request_id = 3;
+    // proposed global sequence
+    int32 global_id = 4;
+    // sender of the service request
+    int32 sender_id = 5;
+
+    ServiceMetadata metadata = 6;
+}
+
+message ServiceMetadata {
+    // last global sequence delivered by the 
+    int32 last_delivered_seq = 1;
+}
+
+message RetransmitRequestMessage {
+    // node asking for retransmit
+    int32 request_node_id = 1;
+    // source node to which we are sending the request to
+    int32 source_node_id = 2;
+    // sequence which we are asking for, the source should send all the request message frmo seq to final local sequence num
+    int32 request_sequence_num = 3;
+}
+
+message RetransmitRequestMessageResponse {
+    // node asking for retransmit
+    int32 request_node_id = 1;
+    // source node to which we are sending the request to
+    int32 source_node_id = 2;
+    // sequence which we are asking for, the source should send all the request message frmo seq to final local sequence num
+    int32 request_sequence_num = 3;
+}
+
+message RetransmitServiceMessage {
+    // node asking for retransmit
+    int32 request_node_id = 1;
+    // source node to which we are sending the request to
+    int32 source_node_id = 2;
+    // sequence which we are asking for, the source should send all the request message frmo seq to final local sequence num
+    int32 request_sequence_num = 3;
+    // the request message list which was asked
+    repeated RequestMessage request_message_list = 4;
+}
+
+message ProcessedRequestMessage {
+    // sender of the request message
+    int32 sender_id = 1;
+    // local sequence number of the sender of the request message
+    int32 local_sequence_num = 2;
+    //assigned global sequence to the request
+    int32 global_sequence_num=3;
+}
