@@ -1,0 +1,31 @@
+# Rust
+/target
+**/target
+**/*.rs.bk
+*.pdb
+
+# Local Raft / product_db state (default DATA_DIR ./data/<NODE_ID>)
+data/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+
+# Editor backups
+*.bak
+*.tmp
+
+# Binaries
+*.exe
+*.dll
+*.dylib

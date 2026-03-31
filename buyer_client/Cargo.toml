@@ -1,0 +1,13 @@
+[package]
+name = "buyer_client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common = { path = "../common" }
+tokio = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package product_db;
+
+service ProductDatabase {
+    rpc CreateItem(CreateItemRequest) returns (CreateItemResponse);
+    rpc UpdateItem(UpdateItemRequest) returns (GenericResponse);
+    rpc GetItem(GetItemRequest) returns (ItemResponse);
+    rpc GetItemsBySeller(GetItemsBySellerRequest) returns (ItemsResponse);
+    rpc SearchItems(SearchItemsRequest) returns (ItemsResponse);
+    rpc AddToCart(CartOperationRequest) returns (GenericResponse);
+    rpc RemoveFromCart(CartOperationRequest) returns (GenericResponse);
+    rpc GetCart(GetCartRequest) returns (CartResponse);
+    rpc SaveCart(SaveCartRequest) returns (GenericResponse);
+    rpc ClearCart(ClearCartRequest) returns (GenericResponse);
+    rpc AddPurchaseHistory(AddPurchaseHistoryRequest) returns (GenericResponse);
+    rpc GetPurchaseHistory(GetPurchaseHistoryRequest) returns (PurchaseHistoryResponse);
+    rpc ResetAll(ResetRequest) returns (GenericResponse);
+}
+
+service RaftService {
+    rpc AppendEntries(RaftAppendEntriesRequest) returns (RaftAppendEntriesResponse);
+    rpc InstallSnapshot(RaftInstallSnapshotRequest) returns (RaftInstallSnapshotResponse);
+    rpc Vote(RaftVoteRequest) returns (RaftVoteResponse);
+}
+
+message ResetRequest {}
+
+message Feedback {
+    int32 thumbs_up = 1;
+    int32 thumbs_down = 2;
+}
+
+message Item {
+    string item_id = 1;
+    string item_name = 2;
+    int32 item_category = 3;
+    repeated string keywords = 4;
+    string condition = 5;  // "New" or "Used"
+    double sale_price = 6;
+    int32 quantity = 7;
+    Feedback feedback = 8;
+    string seller_id = 9;
+}
+
+message CartItem {
+    string item_id = 1;
+    int32 quantity = 2;
+}
+
+message CreateItemRequest {
+    Item item = 1;
+}
+
+message CreateItemResponse {
+    string item_id = 1;
+}
+
+message UpdateItemRequest {
+    Item item = 1;
+}
+
+message GetItemRequest {
+    string item_id = 1;
+}
+
+message ItemResponse {
+    bool found = 1;
+    Item item = 2;
+}
+
+message GetItemsBySellerRequest {
+    string seller_id = 1;
+}
+
+message ItemsResponse {
+    repeated Item items = 1;
+}
+
+message SearchItemsRequest {
+    int32 category = 1;
+    bool has_category = 2;
+    repeated string keywords = 3;
+}
+
+message CartOperationRequest {
+    string buyer_id = 1;
+    string item_id = 2;
+    int32 quantity = 3;
+}
+
+message GetCartRequest {
+    string buyer_id = 1;
+}
+
+message CartResponse {
+    repeated CartItem items = 1;
+}
+
+message SaveCartRequest {
+    string buyer_id = 1;
+    repeated CartItem items = 2;
+}
+
+message ClearCartRequest {
+    string buyer_id = 1;
+}
+
+message AddPurchaseHistoryRequest {
+    string buyer_id = 1;
+    string item_id = 2;
+}
+
+message GetPurchaseHistoryRequest {
+    string buyer_id = 1;
+}
+
+message PurchaseHistoryResponse {
+    repeated string item_ids = 1;
+}
+
+message GenericResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message RaftAppendEntriesRequest {
+    bytes data = 1;
+}
+
+message RaftAppendEntriesResponse {
+    bytes data = 1;
+}
+
+message RaftInstallSnapshotRequest {
+    bytes data = 1;
+}
+
+message RaftInstallSnapshotResponse {
+    bytes data = 1;
+}
+
+message RaftVoteRequest {
+    bytes data = 1;
+}
+
+message RaftVoteResponse {
+    bytes data = 1;
+}

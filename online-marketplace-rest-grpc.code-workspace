@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../online-marketplace-tcp"
+		},
+		{
+			"path": "../online-marketplace-raft-atomicbroadcast"
+		}
+	],
+	"settings": {}
+}

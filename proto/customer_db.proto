@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package customer_db;
+
+service CustomerDatabase {
+    rpc CreateSeller(CreateSellerRequest) returns (CreateSellerResponse);
+    rpc CreateBuyer(CreateBuyerRequest) returns (CreateBuyerResponse);
+    rpc GetSellerByName(GetSellerByNameRequest) returns (SellerResponse);
+    rpc GetBuyerByName(GetBuyerByNameRequest) returns (BuyerResponse);
+    rpc GetSeller(GetSellerRequest) returns (SellerResponse);
+    rpc UpdateSeller(UpdateSellerRequest) returns (GenericResponse);
+    rpc GetBuyer(GetBuyerRequest) returns (BuyerResponse);
+    rpc UpdateBuyer(UpdateBuyerRequest) returns (GenericResponse);
+    rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+    rpc GetSession(GetSessionRequest) returns (SessionResponse);
+    rpc DeleteSession(DeleteSessionRequest) returns (GenericResponse);
+    rpc ResetAll(ResetRequest) returns (GenericResponse);
+}
+
+message ResetRequest {}
+
+message Feedback {
+    int32 thumbs_up = 1;
+    int32 thumbs_down = 2;
+}
+
+message Seller {
+    string seller_id = 1;
+    string seller_name = 2;
+    Feedback feedback = 3;
+    int32 items_sold = 4;
+    string password = 5;
+}
+
+message Buyer {
+    string buyer_id = 1;
+    string buyer_name = 2;
+    int32 items_purchased = 3;
+    string password = 4;
+}
+
+message Session {
+    string session_id = 1;
+    string user_id = 2;
+    string user_type = 3;  // "Buyer" or "Seller"
+    int64 expiration = 4;
+}
+
+message CreateSellerRequest {
+    string seller_name = 1;
+    string password = 2;
+}
+
+message CreateSellerResponse {
+    string seller_id = 1;
+}
+
+message CreateBuyerRequest {
+    string buyer_name = 1;
+    string password = 2;
+}
+
+message CreateBuyerResponse {
+    string buyer_id = 1;
+}
+
+message GetSellerByNameRequest {
+    string seller_name = 1;
+}
+
+message GetBuyerByNameRequest {
+    string buyer_name = 1;
+}
+
+message GetSellerRequest {
+    string seller_id = 1;
+}
+
+message GetBuyerRequest {
+    string buyer_id = 1;
+}
+
+message SellerResponse {
+    bool found = 1;
+    Seller seller = 2;
+}
+
+message BuyerResponse {
+    bool found = 1;
+    Buyer buyer = 2;
+}
+
+message UpdateSellerRequest {
+    Seller seller = 1;
+}
+
+message UpdateBuyerRequest {
+    Buyer buyer = 1;
+}
+
+message CreateSessionRequest {
+    string user_id = 1;
+    string user_type = 2;
+}
+
+message CreateSessionResponse {
+    string session_id = 1;
+    int64 expiration = 2;
+}
+
+message GetSessionRequest {
+    string session_id = 1;
+}
+
+message SessionResponse {
+    bool found = 1;
+    Session session = 2;
+}
+
+message DeleteSessionRequest {
+    string session_id = 1;
+}
+
+message GenericResponse {
+    bool success = 1;
+    string message = 2;
+}
