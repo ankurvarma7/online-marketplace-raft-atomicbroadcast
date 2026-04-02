@@ -25,7 +25,8 @@ use product_proto::product_database_client::ProductDatabaseClient;
 struct AppState {
     customer_db_replicas: Vec<String>,
     current_replica: Arc<Mutex<usize>>,
-    product_db_addr: String,
+    product_db_peers: Vec<String>,
+    product_db_leader: Arc<Mutex<String>>,
 }
 
 async fn get_customer_client(
@@ -59,12 +60,74 @@ async fn get_customer_client(
     Err("All customer DB replicas are unreachable".to_string())
 }
 
+async fn connect_product_db(
+    addr: &str,
+) -> Result<ProductDatabaseClient<tonic::transport::Channel>, String> {
+    let url = if addr.starts_with("http://") {
+        addr.to_string()
+    } else {
+        format!("http://{}", addr)
+    };
+    ProductDatabaseClient::connect(url)
+        .await
+        .map_err(|e| format!("Failed to connect to product_db {}: {}", addr, e))
+}
+
 async fn get_product_client(
     state: &AppState,
 ) -> Result<ProductDatabaseClient<tonic::transport::Channel>, String> {
-    ProductDatabaseClient::connect(format!("http://{}", state.product_db_addr))
-        .await
-        .map_err(|e| format!("Failed to connect to product DB: {}", e))
+    let leader = state.product_db_leader.lock().unwrap().clone();
+    if let Ok(client) = connect_product_db(&leader).await {
+        return Ok(client);
+    }
+    for peer in &state.product_db_peers {
+        if *peer != leader {
+            if let Ok(client) = connect_product_db(peer).await {
+                *state.product_db_leader.lock().unwrap() = peer.clone();
+                return Ok(client);
+            }
+        }
+    }
+    Err("All product_db nodes are unreachable".to_string())
+}
+
+fn try_update_product_leader(state: &AppState, status: &tonic::Status) -> Option<String> {
+    if status.code() == tonic::Code::FailedPrecondition {
+        if let Some(addr) = status
+            .metadata()
+            .get("x-raft-leader-addr")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.trim_start_matches("http://").to_string())
+        {
+            if !addr.is_empty() {
+                *state.product_db_leader.lock().unwrap() = addr.clone();
+                return Some(addr);
+            }
+        }
+    }
+    None
+}
+
+async fn with_product_retry<F, Fut, T>(state: &AppState, call: F) -> Result<T, String>
+where
+    F: Fn(ProductDatabaseClient<tonic::transport::Channel>) -> Fut,
+    Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+{
+    let client = get_product_client(state).await?;
+    match call(client).await {
+        Ok(resp) => Ok(resp.into_inner()),
+        Err(status) => {
+            if let Some(new_leader) = try_update_product_leader(state, &status) {
+                let client = connect_product_db(&new_leader).await?;
+                call(client)
+                    .await
+                    .map(|r| r.into_inner())
+                    .map_err(|e| e.to_string())
+            } else {
+                Err(status.to_string())
+            }
+        }
+    }
 }
 
 async fn validate_session(
@@ -290,11 +353,6 @@ async fn register_item(
         _ => return (StatusCode::BAD_REQUEST, Json(ApiResponse::error("Condition must be 'new' or 'used'"))),
     };
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
-    };
-
     let item = product_proto::Item {
         item_id: String::new(),
         item_name: req.item_name,
@@ -303,30 +361,18 @@ async fn register_item(
         condition: condition.to_string(),
         sale_price: req.sale_price,
         quantity: req.quantity,
-        feedback: Some(product_proto::Feedback {
-            thumbs_up: 0,
-            thumbs_down: 0,
-        }),
+        feedback: Some(product_proto::Feedback { thumbs_up: 0, thumbs_down: 0 }),
         seller_id: session.user_id,
     };
-
-    match client
-        .create_item(product_proto::CreateItemRequest { item: Some(item) })
-        .await
+    let create_req = product_proto::CreateItemRequest { item: Some(item) };
+    match with_product_retry(&state, move |mut c| {
+        let r = create_req.clone();
+        async move { c.create_item(r).await }
+    })
+    .await
     {
-        Ok(resp) => {
-            let r = resp.into_inner();
-            (
-                StatusCode::OK,
-                Json(ApiResponse::ok(RegisterItemResponse {
-                    item_id: r.item_id,
-                })),
-            )
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Ok(r) => (StatusCode::OK, Json(ApiResponse::ok(RegisterItemResponse { item_id: r.item_id }))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -347,33 +393,23 @@ async fn change_item_price(
     };
 
     let item_resp = match client
-        .get_item(product_proto::GetItemRequest {
-            item_id: item_id.clone(),
-        })
+        .get_item(product_proto::GetItemRequest { item_id: item_id.clone() })
         .await
     {
         Ok(r) => r.into_inner(),
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(e.to_string())),
-            )
+            try_update_product_leader(&state, &e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string())));
         }
     };
 
     if !item_resp.found {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiResponse::error("Item not found")),
-        );
+        return (StatusCode::NOT_FOUND, Json(ApiResponse::error("Item not found")));
     }
 
     let mut item = item_resp.item.unwrap();
     if item.seller_id != session.user_id {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(ApiResponse::error("Not your item")),
-        );
+        return (StatusCode::FORBIDDEN, Json(ApiResponse::error("Not your item")));
     }
 
     item.sale_price = req.new_price;
@@ -383,10 +419,10 @@ async fn change_item_price(
         .await
     {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok(EmptyData {}))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => {
+            try_update_product_leader(&state, &e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string())))
+        }
     }
 }
 
@@ -407,33 +443,23 @@ async fn update_units(
     };
 
     let item_resp = match client
-        .get_item(product_proto::GetItemRequest {
-            item_id: item_id.clone(),
-        })
+        .get_item(product_proto::GetItemRequest { item_id: item_id.clone() })
         .await
     {
         Ok(r) => r.into_inner(),
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(e.to_string())),
-            )
+            try_update_product_leader(&state, &e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string())));
         }
     };
 
     if !item_resp.found {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiResponse::error("Item not found")),
-        );
+        return (StatusCode::NOT_FOUND, Json(ApiResponse::error("Item not found")));
     }
 
     let mut item = item_resp.item.unwrap();
     if item.seller_id != session.user_id {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(ApiResponse::error("Not your item")),
-        );
+        return (StatusCode::FORBIDDEN, Json(ApiResponse::error("Not your item")));
     }
 
     item.quantity = req.quantity;
@@ -443,10 +469,10 @@ async fn update_units(
         .await
     {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok(EmptyData {}))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => {
+            try_update_product_leader(&state, &e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string())))
+        }
     }
 }
 
@@ -460,30 +486,18 @@ async fn display_items(
         Err(e) => return (StatusCode::UNAUTHORIZED, Json(ApiResponse::error(e))),
     };
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
-    };
-
-    match client
-        .get_items_by_seller(product_proto::GetItemsBySellerRequest {
-            seller_id: session.user_id,
-        })
-        .await
+    let list_req = product_proto::GetItemsBySellerRequest { seller_id: session.user_id };
+    match with_product_retry(&state, move |mut c| {
+        let r = list_req.clone();
+        async move { c.get_items_by_seller(r).await }
+    })
+    .await
     {
         Ok(resp) => {
-            let items: Vec<Item> = resp
-                .into_inner()
-                .items
-                .into_iter()
-                .map(proto_item_to_common)
-                .collect();
+            let items: Vec<Item> = resp.items.into_iter().map(proto_item_to_common).collect();
             (StatusCode::OK, Json(ApiResponse::ok(items)))
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -495,32 +509,23 @@ async fn reset_all(
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     };
-    let mut product_client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
-    };
-
     if let Err(e) = customer_client
         .reset_all(customer_proto::ResetRequest {})
         .await
     {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Customer DB reset failed: {}", e))),
-        );
+        return (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Customer DB reset failed: {}", e))));
     }
 
-    if let Err(e) = product_client
-        .reset_all(product_proto::ResetRequest {})
-        .await
+    match with_product_retry(&state, |mut c| async move {
+        c.reset_all(product_proto::ResetRequest {}).await
+    })
+    .await
     {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Product DB reset failed: {}", e))),
-        );
+        Ok(_) => (StatusCode::OK, Json(ApiResponse::ok(EmptyData {}))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Product DB reset failed: {}", e)))),
     }
-
-    (StatusCode::OK, Json(ApiResponse::ok(EmptyData {})))
 }
 
 fn proto_item_to_common(item: product_proto::Item) -> Item {
@@ -563,18 +568,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    let product_db_addr =
+    let product_db_initial =
         std::env::var("PRODUCT_DB_ADDR").unwrap_or_else(|_| "127.0.0.1:50052".to_string());
+    let product_db_peers: Vec<String> = std::env::var("PRODUCT_DB_PEERS")
+        .unwrap_or_else(|_| {
+            "127.0.0.1:50052,127.0.0.1:50053,127.0.0.1:50054,127.0.0.1:50055,127.0.0.1:50056"
+                .to_string()
+        })
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
 
-    println!(
-        "Customer DB replicas: {:?}",
-        customer_db_replicas
-    );
+    println!("Customer DB replicas: {:?}", customer_db_replicas);
+    println!("Product DB peers: {:?}", product_db_peers);
 
     let state = AppState {
         customer_db_replicas,
         current_replica: Arc::new(Mutex::new(0)),
-        product_db_addr,
+        product_db_peers,
+        product_db_leader: Arc::new(Mutex::new(product_db_initial)),
     };
 
     let app = Router::new()

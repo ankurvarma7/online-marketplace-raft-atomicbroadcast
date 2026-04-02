@@ -25,7 +25,8 @@ use product_proto::product_database_client::ProductDatabaseClient;
 struct AppState {
     customer_db_replicas: Vec<String>,
     current_replica: Arc<Mutex<usize>>,
-    product_db_addr: String,
+    product_db_peers: Vec<String>,
+    product_db_leader: Arc<Mutex<String>>,
     financial_tx_addr: String,
 }
 
@@ -62,12 +63,80 @@ async fn get_customer_client(
     Err("All customer DB replicas are unreachable".to_string())
 }
 
+async fn connect_product_db(
+    addr: &str,
+) -> Result<ProductDatabaseClient<tonic::transport::Channel>, String> {
+    let url = if addr.starts_with("http://") {
+        addr.to_string()
+    } else {
+        format!("http://{}", addr)
+    };
+    ProductDatabaseClient::connect(url)
+        .await
+        .map_err(|e| format!("Failed to connect to product_db {}: {}", addr, e))
+}
+
 async fn get_product_client(
     state: &AppState,
 ) -> Result<ProductDatabaseClient<tonic::transport::Channel>, String> {
-    ProductDatabaseClient::connect(format!("http://{}", state.product_db_addr))
-        .await
-        .map_err(|e| format!("Failed to connect to product DB: {}", e))
+    let leader = state.product_db_leader.lock().unwrap().clone();
+    if let Ok(client) = connect_product_db(&leader).await {
+        return Ok(client);
+    }
+    // Cached leader unreachable — try all peers.
+    for peer in &state.product_db_peers {
+        if *peer != leader {
+            if let Ok(client) = connect_product_db(peer).await {
+                *state.product_db_leader.lock().unwrap() = peer.clone();
+                return Ok(client);
+            }
+        }
+    }
+    Err("All product_db nodes are unreachable".to_string())
+}
+
+/// If a tonic Status is a Raft leader-redirect, update the leader cache and
+/// return the new leader address so the caller can retry.
+fn try_update_product_leader(state: &AppState, status: &tonic::Status) -> Option<String> {
+    if status.code() == tonic::Code::FailedPrecondition {
+        if let Some(addr) = status
+            .metadata()
+            .get("x-raft-leader-addr")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.trim_start_matches("http://").to_string())
+        {
+            if !addr.is_empty() {
+                *state.product_db_leader.lock().unwrap() = addr.clone();
+                return Some(addr);
+            }
+        }
+    }
+    None
+}
+
+/// Call one product_db RPC, retrying once against the true leader if the first
+/// attempt returns a ForwardToLeader redirect.
+async fn with_product_retry<F, Fut, T>(state: &AppState, call: F) -> Result<T, String>
+where
+    F: Fn(ProductDatabaseClient<tonic::transport::Channel>) -> Fut,
+    Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+{
+    let client = get_product_client(state).await?;
+    match call(client).await {
+        Ok(resp) => Ok(resp.into_inner()),
+        Err(status) => {
+            if let Some(new_leader) = try_update_product_leader(state, &status) {
+                // Retry once against the actual leader.
+                let client = connect_product_db(&new_leader).await?;
+                call(client)
+                    .await
+                    .map(|r| r.into_inner())
+                    .map_err(|e| e.to_string())
+            } else {
+                Err(status.to_string())
+            }
+        }
+    }
 }
 
 async fn validate_session(
@@ -261,32 +330,22 @@ async fn search_items(
         return (StatusCode::UNAUTHORIZED, Json(ApiResponse::error(e)));
     }
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
+    let search_req = product_proto::SearchItemsRequest {
+        category: req.category.unwrap_or(0),
+        has_category: req.category.is_some(),
+        keywords: req.keywords,
     };
-
-    match client
-        .search_items(product_proto::SearchItemsRequest {
-            category: req.category.unwrap_or(0),
-            has_category: req.category.is_some(),
-            keywords: req.keywords,
-        })
-        .await
+    match with_product_retry(&state, move |mut c| {
+        let r = search_req.clone();
+        async move { c.search_items(r).await }
+    })
+    .await
     {
         Ok(resp) => {
-            let items: Vec<Item> = resp
-                .into_inner()
-                .items
-                .into_iter()
-                .map(proto_item_to_common)
-                .collect();
+            let items: Vec<Item> = resp.items.into_iter().map(proto_item_to_common).collect();
             (StatusCode::OK, Json(ApiResponse::ok(items)))
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -299,32 +358,21 @@ async fn get_item(
         return (StatusCode::UNAUTHORIZED, Json(ApiResponse::error(e)));
     }
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
-    };
-
-    match client
-        .get_item(product_proto::GetItemRequest {
-            item_id: item_id.clone(),
-        })
-        .await
+    let get_req = product_proto::GetItemRequest { item_id: item_id.clone() };
+    match with_product_retry(&state, move |mut c| {
+        let r = get_req.clone();
+        async move { c.get_item(r).await }
+    })
+    .await
     {
         Ok(resp) => {
-            let r = resp.into_inner();
-            if r.found {
-                (
-                    StatusCode::OK,
-                    Json(ApiResponse::ok(Some(proto_item_to_common(r.item.unwrap())))),
-                )
+            if resp.found {
+                (StatusCode::OK, Json(ApiResponse::ok(Some(proto_item_to_common(resp.item.unwrap())))))
             } else {
                 (StatusCode::OK, Json(ApiResponse::ok(None)))
             }
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -339,31 +387,25 @@ async fn add_to_cart(
         Err(e) => return (StatusCode::UNAUTHORIZED, Json(ApiResponse::error(e))),
     };
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
+    let cart_req = product_proto::CartOperationRequest {
+        buyer_id: session.user_id,
+        item_id: req.item_id,
+        quantity: req.quantity,
     };
-
-    match client
-        .add_to_cart(product_proto::CartOperationRequest {
-            buyer_id: session.user_id,
-            item_id: req.item_id,
-            quantity: req.quantity,
-        })
-        .await
+    match with_product_retry(&state, move |mut c| {
+        let r = cart_req.clone();
+        async move { c.add_to_cart(r).await }
+    })
+    .await
     {
-        Ok(resp) => {
-            let r = resp.into_inner();
+        Ok(r) => {
             if r.success {
                 (StatusCode::OK, Json(ApiResponse::ok(EmptyData {})))
             } else {
                 (StatusCode::BAD_REQUEST, Json(ApiResponse::error(r.message)))
             }
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -378,24 +420,19 @@ async fn remove_from_cart(
         Err(e) => return (StatusCode::UNAUTHORIZED, Json(ApiResponse::error(e))),
     };
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
+    let cart_req = product_proto::CartOperationRequest {
+        buyer_id: session.user_id,
+        item_id: req.item_id,
+        quantity: req.quantity,
     };
-
-    match client
-        .remove_from_cart(product_proto::CartOperationRequest {
-            buyer_id: session.user_id,
-            item_id: req.item_id,
-            quantity: req.quantity,
-        })
-        .await
+    match with_product_retry(&state, move |mut c| {
+        let r = cart_req.clone();
+        async move { c.remove_from_cart(r).await }
+    })
+    .await
     {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok(EmptyData {}))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -422,10 +459,8 @@ async fn save_cart(
     {
         Ok(r) => r.into_inner(),
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(e.to_string())),
-            )
+            try_update_product_leader(&state, &e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string())));
         }
     };
 
@@ -437,10 +472,10 @@ async fn save_cart(
         .await
     {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok(EmptyData {}))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => {
+            try_update_product_leader(&state, &e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string())))
+        }
     }
 }
 
@@ -454,22 +489,15 @@ async fn clear_cart(
         Err(e) => return (StatusCode::UNAUTHORIZED, Json(ApiResponse::error(e))),
     };
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
-    };
-
-    match client
-        .clear_cart(product_proto::ClearCartRequest {
-            buyer_id: session.user_id,
-        })
-        .await
+    let clear_req = product_proto::ClearCartRequest { buyer_id: session.user_id };
+    match with_product_retry(&state, move |mut c| {
+        let r = clear_req.clone();
+        async move { c.clear_cart(r).await }
+    })
+    .await
     {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok(EmptyData {}))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -483,20 +511,15 @@ async fn display_cart(
         Err(e) => return (StatusCode::UNAUTHORIZED, Json(ApiResponse::error(e))),
     };
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
-    };
-
-    match client
-        .get_cart(product_proto::GetCartRequest {
-            buyer_id: session.user_id,
-        })
-        .await
+    let cart_req = product_proto::GetCartRequest { buyer_id: session.user_id };
+    match with_product_retry(&state, move |mut c| {
+        let r = cart_req.clone();
+        async move { c.get_cart(r).await }
+    })
+    .await
     {
         Ok(resp) => {
             let items: Vec<CartItem> = resp
-                .into_inner()
                 .items
                 .into_iter()
                 .map(|ci| CartItem {
@@ -506,10 +529,7 @@ async fn display_cart(
                 .collect();
             (StatusCode::OK, Json(ApiResponse::ok(items)))
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -536,10 +556,8 @@ async fn provide_feedback(
     {
         Ok(r) => r.into_inner(),
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(e.to_string())),
-            )
+            try_update_product_leader(&state, &e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string())));
         }
     };
 
@@ -567,10 +585,10 @@ async fn provide_feedback(
         .await
     {
         Ok(_) => (StatusCode::OK, Json(ApiResponse::ok(EmptyData {}))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Err(e) => {
+            try_update_product_leader(&state, &e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e.to_string())))
+        }
     }
 }
 
@@ -633,25 +651,15 @@ async fn get_purchases(
         Err(e) => return (StatusCode::UNAUTHORIZED, Json(ApiResponse::error(e))),
     };
 
-    let mut client = match get_product_client(&state).await {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
-    };
-
-    match client
-        .get_purchase_history(product_proto::GetPurchaseHistoryRequest {
-            buyer_id: session.user_id,
-        })
-        .await
+    let hist_req = product_proto::GetPurchaseHistoryRequest { buyer_id: session.user_id };
+    match with_product_retry(&state, move |mut c| {
+        let r = hist_req.clone();
+        async move { c.get_purchase_history(r).await }
+    })
+    .await
     {
-        Ok(resp) => {
-            let ids = resp.into_inner().item_ids;
-            (StatusCode::OK, Json(ApiResponse::ok(ids)))
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(e.to_string())),
-        ),
+        Ok(resp) => (StatusCode::OK, Json(ApiResponse::ok(resp.item_ids))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiResponse::error(e))),
     }
 }
 
@@ -875,20 +883,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    let product_db_addr =
+    let product_db_initial =
         std::env::var("PRODUCT_DB_ADDR").unwrap_or_else(|_| "127.0.0.1:50052".to_string());
+    let product_db_peers: Vec<String> = std::env::var("PRODUCT_DB_PEERS")
+        .unwrap_or_else(|_| {
+            "127.0.0.1:50052,127.0.0.1:50053,127.0.0.1:50054,127.0.0.1:50055,127.0.0.1:50056"
+                .to_string()
+        })
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
     let financial_tx_addr = std::env::var("FINANCIAL_TX_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:8085".to_string());
 
-    println!(
-        "Customer DB replicas: {:?}",
-        customer_db_replicas
-    );
+    println!("Customer DB replicas: {:?}", customer_db_replicas);
+    println!("Product DB peers: {:?}", product_db_peers);
 
     let state = AppState {
         customer_db_replicas,
         current_replica: Arc::new(Mutex::new(0)),
-        product_db_addr,
+        product_db_peers,
+        product_db_leader: Arc::new(Mutex::new(product_db_initial)),
         financial_tx_addr,
     };
 
