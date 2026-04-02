@@ -1,0 +1,2 @@
+connecting to product_db_2
+[2m2026-04-02T15:25:48.419369Z[0m [32m INFO[0m [2mproduct_db[0m[2m:[0m product_db node_id=2 listening on 127.0.0.1:50053 (DATA_DIR=logs/product_db_data/2)

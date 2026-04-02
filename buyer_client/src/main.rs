@@ -1,8 +1,39 @@
 use clap::{Parser, Subcommand};
 use common::*;
+use rand::seq::SliceRandom;
 
-fn get_buyer_server_addr() -> String {
-    std::env::var("BUYER_SERVER_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8083".to_string())
+fn get_buyer_server_replicas() -> Vec<String> {
+    let addrs = std::env::var("BUYER_SERVER_ADDRS").unwrap_or_else(|_| {
+        "http://127.0.0.1:8083,http://127.0.0.1:8084,http://127.0.0.1:8086,http://127.0.0.1:8087"
+            .to_string()
+    });
+    let mut replicas: Vec<String> = addrs
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    replicas.shuffle(&mut rand::thread_rng());
+    replicas
+}
+
+async fn send_with_failover(
+    replicas: &[String],
+    build: impl Fn(&str) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
+    let mut last_err: Option<reqwest::Error> = None;
+    for base in replicas {
+        match build(base).send().await {
+            Ok(resp) => return Ok(resp),
+            Err(e) if e.is_connect() || e.is_timeout() => {
+                eprintln!("Replica {} unavailable, trying next...", base);
+                last_err = Some(e);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(last_err
+        .map(|e| Box::new(e) as Box<dyn std::error::Error>)
+        .unwrap_or_else(|| "All replicas failed".to_string().into()))
 }
 
 #[derive(Parser)]
@@ -108,18 +139,20 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let base = get_buyer_server_addr();
+    let replicas = get_buyer_server_replicas();
     let client = reqwest::Client::new();
 
     match cli.command {
         Commands::CreateAccount { name, password } => {
-            let resp = client
-                .post(format!("{}/buyer/create-account", base))
-                .json(&CreateAccountRequest { name, password })
-                .send()
-                .await?
-                .json::<ApiResponse<CreateAccountResponse>>()
-                .await?;
+            let body = CreateAccountRequest { name, password };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .post(format!("{}/buyer/create-account", base))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<CreateAccountResponse>>()
+            .await?;
             if resp.success {
                 let data = resp.data.unwrap();
                 println!("Account created successfully!");
@@ -129,13 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Login { name, password } => {
-            let resp = client
-                .post(format!("{}/buyer/login", base))
-                .json(&LoginRequest { name, password })
-                .send()
-                .await?
-                .json::<ApiResponse<LoginResponse>>()
-                .await?;
+            let body = LoginRequest { name, password };
+            let resp = send_with_failover(&replicas, |base| {
+                client.post(format!("{}/buyer/login", base)).json(&body)
+            })
+            .await?
+            .json::<ApiResponse<LoginResponse>>()
+            .await?;
             if resp.success {
                 let data = resp.data.unwrap();
                 println!("Login successful!");
@@ -146,12 +179,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Logout { session_id } => {
-            let resp = client
-                .post(format!("{}/buyer/{}/logout", base, session_id))
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.post(format!("{}/buyer/{}/logout", base, session_id))
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Logout successful!");
             } else {
@@ -175,14 +208,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .take(5)
                 .collect();
-
-            let resp = client
-                .post(format!("{}/buyer/{}/search", base, session_id))
-                .json(&SearchRequest { category, keywords })
-                .send()
-                .await?
-                .json::<ApiResponse<Vec<Item>>>()
-                .await?;
+            let body = SearchRequest { category, keywords };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .post(format!("{}/buyer/{}/search", base, session_id))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<Vec<Item>>>()
+            .await?;
             if resp.success {
                 let items = resp.data.unwrap();
                 if items.is_empty() {
@@ -213,15 +247,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             session_id,
             item_id,
         } => {
-            let resp = client
-                .get(format!(
-                    "{}/buyer/{}/items/{}",
-                    base, session_id, item_id
-                ))
-                .send()
-                .await?
-                .json::<ApiResponse<Option<Item>>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.get(format!("{}/buyer/{}/items/{}", base, session_id, item_id))
+            })
+            .await?
+            .json::<ApiResponse<Option<Item>>>()
+            .await?;
             if resp.success {
                 match resp.data.unwrap() {
                     Some(item) => {
@@ -249,13 +280,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             item_id,
             quantity,
         } => {
-            let resp = client
-                .post(format!("{}/buyer/{}/cart/add", base, session_id))
-                .json(&CartOperationRequest { item_id, quantity })
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let body = CartOperationRequest { item_id, quantity };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .post(format!("{}/buyer/{}/cart/add", base, session_id))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Item added to cart!");
             } else {
@@ -267,13 +300,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             item_id,
             quantity,
         } => {
-            let resp = client
-                .post(format!("{}/buyer/{}/cart/remove", base, session_id))
-                .json(&CartOperationRequest { item_id, quantity })
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let body = CartOperationRequest { item_id, quantity };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .post(format!("{}/buyer/{}/cart/remove", base, session_id))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Item removed from cart!");
             } else {
@@ -281,12 +316,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::SaveCart { session_id } => {
-            let resp = client
-                .post(format!("{}/buyer/{}/cart/save", base, session_id))
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.post(format!("{}/buyer/{}/cart/save", base, session_id))
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Cart saved!");
             } else {
@@ -294,12 +329,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::ClearCart { session_id } => {
-            let resp = client
-                .post(format!("{}/buyer/{}/cart/clear", base, session_id))
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.post(format!("{}/buyer/{}/cart/clear", base, session_id))
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Cart cleared!");
             } else {
@@ -307,12 +342,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::DisplayCart { session_id } => {
-            let resp = client
-                .get(format!("{}/buyer/{}/cart", base, session_id))
-                .send()
-                .await?
-                .json::<ApiResponse<Vec<CartItem>>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.get(format!("{}/buyer/{}/cart", base, session_id))
+            })
+            .await?
+            .json::<ApiResponse<Vec<CartItem>>>()
+            .await?;
             if resp.success {
                 let cart = resp.data.unwrap();
                 if cart.is_empty() {
@@ -338,13 +373,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             item_id,
             thumbs_up,
         } => {
-            let resp = client
-                .post(format!("{}/buyer/{}/feedback", base, session_id))
-                .json(&FeedbackRequest { item_id, thumbs_up })
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let body = FeedbackRequest { item_id, thumbs_up };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .post(format!("{}/buyer/{}/feedback", base, session_id))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Feedback submitted!");
             } else {
@@ -355,15 +392,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             session_id,
             seller_id,
         } => {
-            let resp = client
-                .get(format!(
+            let resp = send_with_failover(&replicas, |base| {
+                client.get(format!(
                     "{}/buyer/{}/seller-rating/{}",
                     base, session_id, seller_id
                 ))
-                .send()
-                .await?
-                .json::<ApiResponse<Feedback>>()
-                .await?;
+            })
+            .await?
+            .json::<ApiResponse<Feedback>>()
+            .await?;
             if resp.success {
                 let fb = resp.data.unwrap();
                 println!("Seller Rating:");
@@ -379,12 +416,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::GetPurchases { session_id } => {
-            let resp = client
-                .get(format!("{}/buyer/{}/purchases", base, session_id))
-                .send()
-                .await?
-                .json::<ApiResponse<Vec<String>>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.get(format!("{}/buyer/{}/purchases", base, session_id))
+            })
+            .await?
+            .json::<ApiResponse<Vec<String>>>()
+            .await?;
             if resp.success {
                 let history = resp.data.unwrap();
                 if history.is_empty() {
@@ -406,18 +443,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             expiration_date,
             security_code,
         } => {
-            let resp = client
-                .post(format!("{}/buyer/{}/purchase", base, session_id))
-                .json(&MakePurchaseRequest {
-                    credit_card_name: card_name,
-                    credit_card_number: card_number,
-                    expiration_date,
-                    security_code,
-                })
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let body = MakePurchaseRequest {
+                credit_card_name: card_name,
+                credit_card_number: card_number,
+                expiration_date,
+                security_code,
+            };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .post(format!("{}/buyer/{}/purchase", base, session_id))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Purchase completed successfully!");
             } else {

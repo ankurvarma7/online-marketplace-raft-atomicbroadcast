@@ -1,0 +1,3 @@
+connecting to product_db_1
+[2m2026-04-02T15:25:48.419231Z[0m [32m INFO[0m [2mproduct_db[0m[2m:[0m product_db node_id=1 listening on 127.0.0.1:50052 (DATA_DIR=logs/product_db_data/1)
+[2m2026-04-02T15:34:03.704450Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed

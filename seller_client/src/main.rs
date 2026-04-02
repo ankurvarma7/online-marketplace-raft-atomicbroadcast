@@ -1,8 +1,39 @@
 use clap::{Parser, Subcommand};
 use common::*;
+use rand::seq::SliceRandom;
 
-fn get_seller_server_addr() -> String {
-    std::env::var("SELLER_SERVER_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8082".to_string())
+fn get_seller_server_replicas() -> Vec<String> {
+    let addrs = std::env::var("SELLER_SERVER_ADDRS").unwrap_or_else(|_| {
+        "http://127.0.0.1:8082,http://127.0.0.1:8088,http://127.0.0.1:8089,http://127.0.0.1:8090"
+            .to_string()
+    });
+    let mut replicas: Vec<String> = addrs
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    replicas.shuffle(&mut rand::thread_rng());
+    replicas
+}
+
+async fn send_with_failover(
+    replicas: &[String],
+    build: impl Fn(&str) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
+    let mut last_err: Option<reqwest::Error> = None;
+    for base in replicas {
+        match build(base).send().await {
+            Ok(resp) => return Ok(resp),
+            Err(e) if e.is_connect() || e.is_timeout() => {
+                eprintln!("Replica {} unavailable, trying next...", base);
+                last_err = Some(e);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(last_err
+        .map(|e| Box::new(e) as Box<dyn std::error::Error>)
+        .unwrap_or_else(|| "All replicas failed".to_string().into()))
 }
 
 #[derive(Parser)]
@@ -76,18 +107,20 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let base = get_seller_server_addr();
+    let replicas = get_seller_server_replicas();
     let client = reqwest::Client::new();
 
     match cli.command {
         Commands::CreateAccount { name, password } => {
-            let resp = client
-                .post(format!("{}/seller/create-account", base))
-                .json(&CreateAccountRequest { name, password })
-                .send()
-                .await?
-                .json::<ApiResponse<CreateAccountResponse>>()
-                .await?;
+            let body = CreateAccountRequest { name, password };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .post(format!("{}/seller/create-account", base))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<CreateAccountResponse>>()
+            .await?;
             if resp.success {
                 let data = resp.data.unwrap();
                 println!("Account created successfully!");
@@ -97,13 +130,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Login { name, password } => {
-            let resp = client
-                .post(format!("{}/seller/login", base))
-                .json(&LoginRequest { name, password })
-                .send()
-                .await?
-                .json::<ApiResponse<LoginResponse>>()
-                .await?;
+            let body = LoginRequest { name, password };
+            let resp = send_with_failover(&replicas, |base| {
+                client.post(format!("{}/seller/login", base)).json(&body)
+            })
+            .await?
+            .json::<ApiResponse<LoginResponse>>()
+            .await?;
             if resp.success {
                 let data = resp.data.unwrap();
                 println!("Login successful!");
@@ -114,12 +147,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Logout { session_id } => {
-            let resp = client
-                .post(format!("{}/seller/{}/logout", base, session_id))
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.post(format!("{}/seller/{}/logout", base, session_id))
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Logout successful!");
             } else {
@@ -127,12 +160,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::GetRating { session_id } => {
-            let resp = client
-                .get(format!("{}/seller/{}/rating", base, session_id))
-                .send()
-                .await?
-                .json::<ApiResponse<Feedback>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.get(format!("{}/seller/{}/rating", base, session_id))
+            })
+            .await?
+            .json::<ApiResponse<Feedback>>()
+            .await?;
             if resp.success {
                 let fb = resp.data.unwrap();
                 println!("Seller Rating:");
@@ -168,21 +201,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .take(5)
                 .collect();
-
-            let resp = client
-                .post(format!("{}/seller/{}/items", base, session_id))
-                .json(&RegisterItemRequest {
-                    item_name: name,
-                    item_category: category,
-                    keywords,
-                    condition,
-                    sale_price: price,
-                    quantity,
-                })
-                .send()
-                .await?
-                .json::<ApiResponse<RegisterItemResponse>>()
-                .await?;
+            let body = RegisterItemRequest {
+                item_name: name,
+                item_category: category,
+                keywords,
+                condition,
+                sale_price: price,
+                quantity,
+            };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .post(format!("{}/seller/{}/items", base, session_id))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<RegisterItemResponse>>()
+            .await?;
             if resp.success {
                 let data = resp.data.unwrap();
                 println!("Item registered successfully!");
@@ -196,16 +230,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             item_id,
             new_price,
         } => {
-            let resp = client
-                .put(format!(
-                    "{}/seller/{}/items/{}/price",
-                    base, session_id, item_id
-                ))
-                .json(&ChangePriceRequest { new_price })
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let body = ChangePriceRequest { new_price };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .put(format!(
+                        "{}/seller/{}/items/{}/price",
+                        base, session_id, item_id
+                    ))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Price changed successfully!");
             } else {
@@ -217,16 +253,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             item_id,
             quantity,
         } => {
-            let resp = client
-                .put(format!(
-                    "{}/seller/{}/items/{}/quantity",
-                    base, session_id, item_id
-                ))
-                .json(&UpdateUnitsRequest { quantity })
-                .send()
-                .await?
-                .json::<ApiResponse<EmptyData>>()
-                .await?;
+            let body = UpdateUnitsRequest { quantity };
+            let resp = send_with_failover(&replicas, |base| {
+                client
+                    .put(format!(
+                        "{}/seller/{}/items/{}/quantity",
+                        base, session_id, item_id
+                    ))
+                    .json(&body)
+            })
+            .await?
+            .json::<ApiResponse<EmptyData>>()
+            .await?;
             if resp.success {
                 println!("Units updated successfully!");
             } else {
@@ -234,12 +272,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::DisplayItems { session_id } => {
-            let resp = client
-                .get(format!("{}/seller/{}/items", base, session_id))
-                .send()
-                .await?
-                .json::<ApiResponse<Vec<Item>>>()
-                .await?;
+            let resp = send_with_failover(&replicas, |base| {
+                client.get(format!("{}/seller/{}/items", base, session_id))
+            })
+            .await?
+            .json::<ApiResponse<Vec<Item>>>()
+            .await?;
             if resp.success {
                 let items = resp.data.unwrap();
                 if items.is_empty() {

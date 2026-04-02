@@ -46,7 +46,7 @@ impl ProductDbStore {
         std::fs::create_dir_all(&data_dir).context("create data dir")?;
         let snapshot_dir = data_dir.join("snapshots");
         std::fs::create_dir_all(&snapshot_dir).context("create snapshot dir")?;
-
+        println!("connecting to product_db_{node_id}");
         let db_path = data_dir.join(format!("product_db_{}.sqlite", node_id));
         let conn = Connection::open(&db_path).context("open sqlite")?;
         init_business_schema(&conn)?;

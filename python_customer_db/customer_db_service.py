@@ -33,7 +33,7 @@ from message_struct_pb2 import (
 
 GRPC_PORT = 50051
 NUM_NODES = 5
-DELIVER_TIMEOUT = 20.0   # seconds a gRPC handler waits for delivery
+DELIVER_TIMEOUT = 30.0   # seconds a gRPC handler waits for delivery
 SESSION_TTL = 300         # seconds, matching the Rust implementation
 
 CUSTOMER_DB_BASE_PORT = int(os.getenv("CUSTOMER_DB_BASE_PORT", 8000))
@@ -143,24 +143,34 @@ def _exec_update_seller(req, conn) -> GenericResponse:
     feedback = seller.feedback if seller.HasField("feedback") else None
     thumbs_up = feedback.thumbs_up if feedback else 0
     thumbs_down = feedback.thumbs_down if feedback else 0
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE sellers SET thumbs_up = %s, thumbs_down = %s, items_sold = %s WHERE id = %s",
-            (thumbs_up, thumbs_down, seller.items_sold, seller.seller_id)
-        )
-    conn.commit()
-    return GenericResponse(success=True, message="Seller updated successfully")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sellers SET thumbs_up = %s, thumbs_down = %s, items_sold = %s WHERE id = %s",
+                (thumbs_up, thumbs_down, seller.items_sold, seller.seller_id)
+            )
+        conn.commit()
+        return GenericResponse(success=True, message="Seller updated successfully")
+    except pymysql.Error as e:
+        conn.rollback()
+        print(f"[DB] UpdateSeller error: {e}")
+        return GenericResponse(success=False, message=str(e))
 
 
 def _exec_update_buyer(req, conn) -> GenericResponse:
     buyer = req.buyer
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE buyers SET items_purchased = %s WHERE id = %s",
-            (buyer.items_purchased, buyer.buyer_id)
-        )
-    conn.commit()
-    return GenericResponse(success=True, message="Buyer updated successfully")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE buyers SET items_purchased = %s WHERE id = %s",
+                (buyer.items_purchased, buyer.buyer_id)
+            )
+        conn.commit()
+        return GenericResponse(success=True, message="Buyer updated successfully")
+    except pymysql.Error as e:
+        conn.rollback()
+        print(f"[DB] UpdateBuyer error: {e}")
+        return GenericResponse(success=False, message=str(e))
 
 
 def _exec_create_session(req, session_id: str, conn) -> CreateSessionResponse:
@@ -184,19 +194,29 @@ def _exec_create_session(req, session_id: str, conn) -> CreateSessionResponse:
 
 
 def _exec_delete_session(req, conn) -> GenericResponse:
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM sessions WHERE id = %s", (req.session_id,))
-    conn.commit()
-    return GenericResponse(success=True, message="Session deleted successfully")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM sessions WHERE id = %s", (req.session_id,))
+        conn.commit()
+        return GenericResponse(success=True, message="Session deleted successfully")
+    except pymysql.Error as e:
+        conn.rollback()
+        print(f"[DB] DeleteSession error: {e}")
+        return GenericResponse(success=False, message=str(e))
 
 
 def _exec_reset_all(conn) -> GenericResponse:
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM sellers")
-        cur.execute("DELETE FROM buyers")
-        cur.execute("DELETE FROM sessions")
-    conn.commit()
-    return GenericResponse(success=True, message="All customer data cleared")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM sellers")
+            cur.execute("DELETE FROM buyers")
+            cur.execute("DELETE FROM sessions")
+        conn.commit()
+        return GenericResponse(success=True, message="All customer data cleared")
+    except pymysql.Error as e:
+        conn.rollback()
+        print(f"[DB] ResetAll error: {e}")
+        return GenericResponse(success=False, message=str(e))
 
 
 # ─────────────────────────────────────────────────────────
@@ -275,7 +295,20 @@ class NodeState:
     def on_service_message(self, svc: ServiceMessage):
         with self.lock:
             global_seq = svc.global_id
+
+            # Always update delivery progress from whoever sent this message,
+            # even if we've already processed this global_seq (delivery ack from
+            # a different node reuses the same global_id with a different sender_id).
+            if svc.HasField('metadata'):
+                self.node_last_delivered[svc.sender_id] = max(
+                    self.node_last_delivered.get(svc.sender_id, -1),
+                    svc.metadata.last_delivered_seq
+                )
+
             if global_seq in self.received_service_msgs:
+                # Duplicate sequence message, but node_last_delivered may have
+                # changed, so re-check delivery.
+                self._try_deliver()
                 return
 
             self.received_service_msgs[global_seq] = svc
@@ -284,12 +317,6 @@ class NodeState:
 
             if req_key in self.all_requests:
                 self.request_to_seq[req_key] = global_seq
-
-            if svc.HasField('metadata'):
-                self.node_last_delivered[svc.sender_id] = max(
-                    self.node_last_delivered.get(svc.sender_id, -1),
-                    svc.metadata.last_delivered_seq
-                )
 
             self._detect_missing_seqs(global_seq)
             self._try_sequence()
@@ -377,13 +404,26 @@ class NodeState:
         body = req.WhichOneof("request_body")
         print(f"[DELIVER] global_seq={s} sender={req.sender_id} local_seq={req.local_sequence_num} body={body}")
 
+        # Broadcast a delivery ack so other nodes learn this node has delivered s.
+        # Reuses ServiceMessage with sender_id = self.node_id and updated metadata;
+        # on_service_message will update node_last_delivered[self.node_id] on peers
+        # even though they've already seen this global_seq.
+        orig_svc = self.received_service_msgs[s]
+        ack = ServiceMessage(
+            source_node_id=orig_svc.source_node_id,
+            local_seq_num=orig_svc.local_seq_num,
+            global_id=s,
+            sender_id=self.node_id,
+            metadata=ServiceMetadata(last_delivered_seq=s),
+        )
+        self._broadcast_service(ack)
+
         pending = self.pending_responses.pop(req_key, None)
         self.delivery_queue.put((req, pending))
         self._try_deliver()
 
     def _majority_confirmed(self, global_seq: int) -> bool:
-        majority = self.n // 2 + 1
-        return sum(1 for v in self.node_last_delivered.values() if v >= global_seq - 1) >= majority
+        return all(v >= global_seq - 1 for v in self.node_last_delivered.values())
 
     def _detect_missing_requests(self, sender_id: int, received_local_seq: int):
         received = self.received_from_sender.get(sender_id, set())
@@ -449,10 +489,13 @@ class NodeState:
 # ─────────────────────────────────────────────────────────
 
 def delivery_executor(state: NodeState):
-    conn = create_db_connection(state.node_id)
     while True:
         req, pending = state.delivery_queue.get()
-        response = execute_request(req, conn)
+        conn = create_db_connection(state.node_id)
+        try:
+            response = execute_request(req, conn)
+        finally:
+            conn.close()
         if pending is not None:
             event, holder = pending
             holder.response = response
@@ -464,10 +507,9 @@ def delivery_executor(state: NodeState):
 # ─────────────────────────────────────────────────────────
 
 class CustomerDatabaseService(CustomerDatabaseServicer):
-    def __init__(self, state: NodeState, db_conn):
+    def __init__(self, state: NodeState):
         super().__init__()
         self.state = state
-        self.db_conn = db_conn  # for read-only RPCs
 
     def _broadcast_write(self, seq: int, set_body_fn):
         req_msg = RequestMessage(
@@ -551,13 +593,17 @@ class CustomerDatabaseService(CustomerDatabaseServicer):
     # ── Read RPCs ──────────────────────────────────────────
 
     def GetSellerByName(self, request, context):
-        with self.db_conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, name, password, thumbs_up, thumbs_down, items_sold "
-                "FROM sellers WHERE name = %s",
-                (request.seller_name,)
-            )
-            row = cur.fetchone()
+        conn = create_db_connection(self.state.node_id)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, password, thumbs_up, thumbs_down, items_sold "
+                    "FROM sellers WHERE name = %s",
+                    (request.seller_name,)
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
         if row is None:
             return SellerResponse(found=False)
         return SellerResponse(
@@ -570,12 +616,16 @@ class CustomerDatabaseService(CustomerDatabaseServicer):
         )
 
     def GetBuyerByName(self, request, context):
-        with self.db_conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, name, password, items_purchased FROM buyers WHERE name = %s",
-                (request.buyer_name,)
-            )
-            row = cur.fetchone()
+        conn = create_db_connection(self.state.node_id)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, password, items_purchased FROM buyers WHERE name = %s",
+                    (request.buyer_name,)
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
         if row is None:
             return BuyerResponse(found=False)
         return BuyerResponse(
@@ -587,13 +637,17 @@ class CustomerDatabaseService(CustomerDatabaseServicer):
         )
 
     def GetSeller(self, request, context):
-        with self.db_conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, name, password, thumbs_up, thumbs_down, items_sold "
-                "FROM sellers WHERE id = %s",
-                (request.seller_id,)
-            )
-            row = cur.fetchone()
+        conn = create_db_connection(self.state.node_id)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, password, thumbs_up, thumbs_down, items_sold "
+                    "FROM sellers WHERE id = %s",
+                    (request.seller_id,)
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
         if row is None:
             return SellerResponse(found=False)
         return SellerResponse(
@@ -606,12 +660,16 @@ class CustomerDatabaseService(CustomerDatabaseServicer):
         )
 
     def GetBuyer(self, request, context):
-        with self.db_conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, name, password, items_purchased FROM buyers WHERE id = %s",
-                (request.buyer_id,)
-            )
-            row = cur.fetchone()
+        conn = create_db_connection(self.state.node_id)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, password, items_purchased FROM buyers WHERE id = %s",
+                    (request.buyer_id,)
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
         if row is None:
             return BuyerResponse(found=False)
         return BuyerResponse(
@@ -623,19 +681,24 @@ class CustomerDatabaseService(CustomerDatabaseServicer):
         )
 
     def GetSession(self, request, context):
-        with self.db_conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, user_id, user_type, expiration FROM sessions WHERE id = %s",
-                (request.session_id,)
-            )
-            row = cur.fetchone()
-        if row is None:
-            return SessionResponse(found=False)
-        if row["expiration"] < int(time.time()):
-            with self.db_conn.cursor() as cur:
-                cur.execute("DELETE FROM sessions WHERE id = %s", (request.session_id,))
-            self.db_conn.commit()
-            return SessionResponse(found=False)
+        conn = create_db_connection(self.state.node_id)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, user_id, user_type, expiration FROM sessions WHERE id = %s",
+                    (request.session_id,)
+                )
+                row = cur.fetchone()
+            print("got the answer from db", row)
+            if row is None:
+                return SessionResponse(found=False)
+            if row["expiration"] < int(time.time()):
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM sessions WHERE id = %s", (request.session_id,))
+                conn.commit()
+                return SessionResponse(found=False)
+        finally:
+            conn.close()
         return SessionResponse(
             found=True,
             session=Session(
@@ -649,9 +712,9 @@ class CustomerDatabaseService(CustomerDatabaseServicer):
 # Thread functions
 # ─────────────────────────────────────────────────────────
 
-def grpc_serve(state: NodeState, db_conn):
+def grpc_serve(state: NodeState):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    add_CustomerDatabaseServicer_to_server(CustomerDatabaseService(state, db_conn), server)
+    add_CustomerDatabaseServicer_to_server(CustomerDatabaseService(state), server)
     port = GRPC_PORT + state.node_id
     server.add_insecure_port(f"0.0.0.0:{port}")
     server.start()
@@ -704,11 +767,8 @@ def start_server(args):
     state = NodeState(node_id=args.id, n=NUM_NODES, udp_sock=udp_sock)
     msg_queue: queue.Queue = queue.Queue(maxsize=1000)
 
-    # Shared DB connection for gRPC read-only RPCs
-    db_conn = create_db_connection(args.id)
-
     threads = [
-        threading.Thread(target=grpc_serve, args=(state, db_conn), daemon=True),
+        threading.Thread(target=grpc_serve, args=(state,), daemon=True),
         threading.Thread(target=udp_receive, args=(state, msg_queue), daemon=True),
         threading.Thread(target=process_messages, args=(state, msg_queue), daemon=True),
         threading.Thread(target=delivery_executor, args=(state,), daemon=True),

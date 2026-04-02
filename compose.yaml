@@ -1,4 +1,7 @@
 services:
+  # =============================================================================
+  # Customer Database Services (one per replica)
+  # =============================================================================
   customerdb_0:
     build:
       context: ./DB/customer
@@ -7,6 +10,8 @@ services:
     restart: unless-stopped
     ports:
       - "8000:3306"
+    networks:
+      - marketplace_network
 
   customerdb_1:
     build:
@@ -16,6 +21,8 @@ services:
     restart: unless-stopped
     ports:
       - "8001:3306"
+    networks:
+      - marketplace_network
 
   customerdb_2:
     build:
@@ -25,6 +32,8 @@ services:
     restart: unless-stopped
     ports:
       - "8002:3306"
+    networks:
+      - marketplace_network
 
   customerdb_3:
     build:
@@ -34,6 +43,8 @@ services:
     restart: unless-stopped
     ports:
       - "8003:3306"
+    networks:
+      - marketplace_network
 
   customerdb_4:
     build:
@@ -43,3 +54,23 @@ services:
     restart: unless-stopped
     ports:
       - "8004:3306"
+    networks:
+      - marketplace_network
+
+  customerdb_5:
+    build:
+      context: ./DB/customer
+      dockerfile: Dockerfile
+    container_name: customerdb_5
+    restart: unless-stopped
+    ports:
+      - "8005:3306"
+    networks:
+      - marketplace_network
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  marketplace_network:
+    driver: bridge
