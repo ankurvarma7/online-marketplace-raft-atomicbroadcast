@@ -521,6 +521,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "evaluator_distributed"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "common",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
