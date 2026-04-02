@@ -31,22 +31,41 @@ from message_struct_pb2 import (
     RetransmitRequestMessage, RetransmitServiceMessage,
 )
 
-GRPC_PORT = 50051
-NUM_NODES = 5
-DELIVER_TIMEOUT = 30.0   # seconds a gRPC handler waits for delivery
-SESSION_TTL = 300         # seconds, matching the Rust implementation
+DELIVER_TIMEOUT = float(os.getenv("DELIVER_TIMEOUT", "30.0"))
+SESSION_TTL     = int(os.getenv("SESSION_TTL", "300"))
 
-CUSTOMER_DB_BASE_PORT = int(os.getenv("CUSTOMER_DB_BASE_PORT", 8000))
-CUSTOMER_DB_HOST = os.getenv("CUSTOMER_DB_HOST", "127.0.0.1")
+# ── Database connection settings ───────────────────────────────────────────────
+CUSTOMER_DB_HOST     = os.getenv("CUSTOMER_DB_HOST", "127.0.0.1")
+CUSTOMER_DB_PORT     = int(os.getenv("CUSTOMER_DB_PORT", "8000"))   # exact port for *this* node's DB
+CUSTOMER_DB_USER     = os.getenv("CUSTOMER_DB_USER", "root")
 CUSTOMER_DB_PASSWORD = os.getenv("CUSTOMER_DB_PASSWORD", "my-secret-pw")
+CUSTOMER_DB_NAME     = os.getenv("CUSTOMER_DB_NAME", "customer_db")
 
-IP_ADD_MAP = {
-    0: {'IP': '127.0.0.1', 'PORT': 50000},
-    1: {'IP': '127.0.0.1', 'PORT': 50001},
-    2: {'IP': '127.0.0.1', 'PORT': 50002},
-    3: {'IP': '127.0.0.1', 'PORT': 50003},
-    4: {'IP': '127.0.0.1', 'PORT': 50004},
-}
+# ── Cluster topology ───────────────────────────────────────────────────────────
+# PEERS: comma-separated list of  <node_id>=<ip>:<udp_port>
+#   e.g. "0=127.0.0.1:50000,1=127.0.0.1:50001,2=127.0.0.1:50002,3=127.0.0.1:50003,4=127.0.0.1:50004"
+#
+# GRPC_BIND_ADDR: address this node's gRPC server binds to, e.g. "0.0.0.0:50051"
+# UDP_BIND_ADDR : address this node's UDP socket binds to,  e.g. "0.0.0.0:50000"
+#   When not set, both fall back to the entry for this node_id in PEERS.
+
+def _parse_peers(raw: str) -> dict:
+    """Parse PEERS env var into {node_id: {'IP': str, 'PORT': int}}."""
+    result = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        node_part, addr_part = entry.split("=", 1)
+        node_id = int(node_part.strip())
+        ip, port_str = addr_part.rsplit(":", 1)
+        result[node_id] = {"IP": ip.strip(), "PORT": int(port_str.strip())}
+    return result
+
+
+_DEFAULT_PEERS = ",".join(f"{i}=127.0.0.1:{50000+i}" for i in range(5))
+IP_ADD_MAP: dict = _parse_peers(os.getenv("PEERS", _DEFAULT_PEERS))
+NUM_NODES: int = int(os.getenv("NUM_NODES", str(len(IP_ADD_MAP))))
 
 
 # ─────────────────────────────────────────────────────────
@@ -54,20 +73,19 @@ IP_ADD_MAP = {
 # ─────────────────────────────────────────────────────────
 
 def create_db_connection(node_id: int):
-    port = CUSTOMER_DB_BASE_PORT + node_id
     try:
         conn = pymysql.connect(
             host=CUSTOMER_DB_HOST,
-            port=port,
-            user="root",
+            port=CUSTOMER_DB_PORT,
+            user=CUSTOMER_DB_USER,
             password=CUSTOMER_DB_PASSWORD,
-            database="customer_db",
+            database=CUSTOMER_DB_NAME,
             cursorclass=pymysql.cursors.DictCursor,
         )
-        print(f"[DB] Node {node_id} connected to customer_db on port {port}")
+        print(f"[DB] Node {node_id} connected to {CUSTOMER_DB_HOST}:{CUSTOMER_DB_PORT}/{CUSTOMER_DB_NAME}")
         return conn
     except pymysql.Error as e:
-        print(f"[DB] Node {node_id} connection failed on port {port}: {e}")
+        print(f"[DB] Node {node_id} connection failed ({CUSTOMER_DB_HOST}:{CUSTOMER_DB_PORT}): {e}")
         return None
 
 
@@ -712,22 +730,20 @@ class CustomerDatabaseService(CustomerDatabaseServicer):
 # Thread functions
 # ─────────────────────────────────────────────────────────
 
-def grpc_serve(state: NodeState):
+def grpc_serve(state: NodeState, grpc_bind_addr: str):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     add_CustomerDatabaseServicer_to_server(CustomerDatabaseService(state), server)
-    port = GRPC_PORT + state.node_id
-    server.add_insecure_port(f"0.0.0.0:{port}")
+    server.add_insecure_port(grpc_bind_addr)
     server.start()
-    print(f"[gRPC] Node {state.node_id} listening on 0.0.0.0:{port}")
+    print(f"[gRPC] Node {state.node_id} listening on {grpc_bind_addr}")
     server.wait_for_termination()
 
 
-def udp_receive(state: NodeState, msg_queue: queue.Queue):
+def udp_receive(state: NodeState, msg_queue: queue.Queue, udp_bind_addr: tuple):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    bind_addr = IP_ADD_MAP[state.node_id]
-    sock.bind((bind_addr['IP'], bind_addr['PORT']))
-    print(f"[UDP] Node {state.node_id} listening on {bind_addr['IP']}:{bind_addr['PORT']}")
+    sock.bind(udp_bind_addr)
+    print(f"[UDP] Node {state.node_id} listening on {udp_bind_addr[0]}:{udp_bind_addr[1]}")
     while True:
         data, _ = sock.recvfrom(65535)
         msg_queue.put(data)
@@ -763,20 +779,36 @@ def process_messages(state: NodeState, msg_queue: queue.Queue):
 # ─────────────────────────────────────────────────────────
 
 def start_server(args):
+    node_id = args.id
+
+    # ── Resolve UDP bind address ───────────────────────────────────────────────
+    udp_bind_env = os.getenv("UDP_BIND_ADDR", "")
+    if udp_bind_env:
+        udp_ip, udp_port_str = udp_bind_env.rsplit(":", 1)
+        udp_bind = (udp_ip, int(udp_port_str))
+    elif node_id in IP_ADD_MAP:
+        entry = IP_ADD_MAP[node_id]
+        udp_bind = (entry["IP"], entry["PORT"])
+    else:
+        raise ValueError(f"No UDP address for node {node_id}. Set UDP_BIND_ADDR or include node in PEERS.")
+
+    # ── Resolve gRPC bind address ──────────────────────────────────────────────
+    grpc_bind = os.getenv("GRPC_BIND_ADDR", f"0.0.0.0:{50051 + node_id}")
+
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    state = NodeState(node_id=args.id, n=NUM_NODES, udp_sock=udp_sock)
+    state = NodeState(node_id=node_id, n=NUM_NODES, udp_sock=udp_sock)
     msg_queue: queue.Queue = queue.Queue(maxsize=1000)
 
     threads = [
-        threading.Thread(target=grpc_serve, args=(state,), daemon=True),
-        threading.Thread(target=udp_receive, args=(state, msg_queue), daemon=True),
+        threading.Thread(target=grpc_serve, args=(state, grpc_bind), daemon=True),
+        threading.Thread(target=udp_receive, args=(state, msg_queue, udp_bind), daemon=True),
         threading.Thread(target=process_messages, args=(state, msg_queue), daemon=True),
         threading.Thread(target=delivery_executor, args=(state,), daemon=True),
     ]
     for t in threads:
         t.start()
 
-    print(f"[Main] Node {args.id} started — gRPC port {GRPC_PORT + args.id}, UDP port {IP_ADD_MAP[args.id]['PORT']}")
+    print(f"[Main] Node {node_id} started — gRPC {grpc_bind}, UDP {udp_bind[0]}:{udp_bind[1]}, DB {CUSTOMER_DB_HOST}:{CUSTOMER_DB_PORT}")
 
     for t in threads:
         t.join()
@@ -784,7 +816,7 @@ def start_server(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CustomerDB replica with total order broadcast")
-    parser.add_argument("--id", type=int, required=True, help="Node ID (0 to NUM_NODES-1)")
+    parser.add_argument("--id", type=int, required=True, help="Node ID (0-indexed, must match entry in PEERS)")
     args = parser.parse_args()
     try:
         start_server(args)

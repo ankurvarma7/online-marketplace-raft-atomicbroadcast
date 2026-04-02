@@ -1,2 +1,22 @@
 connecting to product_db_4
-[2m2026-04-02T15:25:48.419435Z[0m [32m INFO[0m [2mproduct_db[0m[2m:[0m product_db node_id=4 listening on 127.0.0.1:50055 (DATA_DIR=logs/product_db_data/4)
+[2m2026-04-02T15:56:40.246774Z[0m [32m INFO[0m [2mproduct_db[0m[2m:[0m product_db node_id=4 listening on 127.0.0.1:50055 (DATA_DIR=logs/product_db_data/4)
+[2m2026-04-02T15:57:13.903780Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T15:57:13.905718Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T15:57:13.905819Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T15:57:13.905982Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T17:35:06.855470Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:35.501834Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:35.572337Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:35.585958Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:35.586226Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:35.625533Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:35.625546Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:35.636926Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:45.874642Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:45.874824Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T18:19:45.878478Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T19:15:01.808427Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T19:15:01.844315Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T19:15:01.895471Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T19:15:01.909640Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T19:15:01.909492Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
