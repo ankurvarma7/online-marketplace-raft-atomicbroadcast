@@ -79,6 +79,32 @@ PYTHON="${PYTHON:-python3}"
 LOG_DIR="${LOG_DIR:-${REPO_ROOT}/logs/customer_db}"
 PID_DIR="${PID_DIR:-${REPO_ROOT}/logs/marketplace_pids}"
 
+# ── Log rotation ──────────────────────────────────────────────────────────────
+# Maximum size of a single log file in bytes before it is truncated to the last
+# LOG_TAIL_LINES lines. Checked every LOG_CHECK_INTERVAL seconds.
+LOG_MAX_BYTES="${LOG_MAX_BYTES:-52428800}"   # 50 MB
+LOG_TAIL_LINES="${LOG_TAIL_LINES:-1000}"
+LOG_CHECK_INTERVAL="${LOG_CHECK_INTERVAL:-30}"
+
+# Start a background watchdog that caps log growth for one file.
+# Exits automatically once the PID file disappears (process stopped).
+_start_log_watchdog() {
+    local log_file="$1"
+    local pid_file="$2"
+    (
+        while [ -f "$pid_file" ]; do
+            sleep "$LOG_CHECK_INTERVAL"
+            if [ -f "$log_file" ]; then
+                size=$(wc -c < "$log_file" 2>/dev/null || echo 0)
+                if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+                    tail -n "$LOG_TAIL_LINES" "$log_file" > "${log_file}.tmp" \
+                        && mv "${log_file}.tmp" "$log_file"
+                fi
+            fi
+        done
+    ) &
+}
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 stop_node() {
@@ -130,6 +156,7 @@ start_node() {
 
     echo $! > "$pid_file"
     echo "  PID $!"
+    _start_log_watchdog "$log_file" "$pid_file"
 }
 
 # ── Mode dispatch ─────────────────────────────────────────────────────────────

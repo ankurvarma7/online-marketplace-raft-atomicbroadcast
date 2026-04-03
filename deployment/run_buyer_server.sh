@@ -48,6 +48,28 @@ BINARY_DIR="${BINARY_DIR:-${REPO_ROOT}/target/release}"
 LOG_DIR="${LOG_DIR:-${REPO_ROOT}/logs/buyer_server}"
 PID_DIR="${PID_DIR:-${REPO_ROOT}/logs/marketplace_pids}"
 
+# ── Log rotation ──────────────────────────────────────────────────────────────
+LOG_MAX_BYTES="${LOG_MAX_BYTES:-52428800}"   # 50 MB
+LOG_TAIL_LINES="${LOG_TAIL_LINES:-1000}"
+LOG_CHECK_INTERVAL="${LOG_CHECK_INTERVAL:-30}"
+
+_start_log_watchdog() {
+    local log_file="$1"
+    local pid_file="$2"
+    (
+        while [ -f "$pid_file" ]; do
+            sleep "$LOG_CHECK_INTERVAL"
+            if [ -f "$log_file" ]; then
+                size=$(wc -c < "$log_file" 2>/dev/null || echo 0)
+                if [ "$size" -gt "$LOG_MAX_BYTES" ]; then
+                    tail -n "$LOG_TAIL_LINES" "$log_file" > "${log_file}.tmp" \
+                        && mv "${log_file}.tmp" "$log_file"
+                fi
+            fi
+        done
+    ) &
+}
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # Extract just the port number from an addr like "0.0.0.0:8083" or "8083".
@@ -96,6 +118,7 @@ start_replica() {
 
     echo $! > "$pid_file"
     echo "  PID $!"
+    _start_log_watchdog "$log_file" "$pid_file"
 }
 
 # ── Mode dispatch ─────────────────────────────────────────────────────────────
