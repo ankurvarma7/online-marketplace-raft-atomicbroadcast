@@ -41,7 +41,7 @@ impl RaftNetwork<ProductDbRequest> for ProductDbRouter {
             .map_err(|e| anyhow!("connect peer {}: {}", target, e))?;
         let bytes = bincode::serialize(&rpc)?;
         let resp = tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(30),
             client.append_entries(crate::proto::RaftAppendEntriesRequest { data: bytes }),
         )
         .await
@@ -85,7 +85,7 @@ impl RaftNetwork<ProductDbRequest> for ProductDbRouter {
             .map_err(|e| anyhow!("connect peer {}: {}", target, e))?;
         let bytes = bincode::serialize(&rpc)?;
         let resp = tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(30),
             client.vote(crate::proto::RaftVoteRequest { data: bytes }),
         )
         .await
