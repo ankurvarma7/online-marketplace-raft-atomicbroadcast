@@ -110,6 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let replicas = get_seller_server_replicas();
     let client = reqwest::Client::new();
 
+    // stderr so this always shows next to API errors (some terminals hide stdout)
+    eprintln!("[seller_client] SELLER_SERVER_ADDRS replicas: {:?}", replicas);
+
     match cli.command {
         Commands::CreateAccount { name, password } => {
             let body = CreateAccountRequest { name, password };
@@ -126,7 +129,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Account created successfully!");
                 println!("Seller ID: {}", data.user_id);
             } else {
-                eprintln!("Error: {}", resp.error.unwrap_or_default());
+                let err = resp.error.unwrap_or_default();
+                eprintln!("Error: {}", err);
+                if err.contains("Unimplemented") {
+                    eprintln!(
+                        "Hint: seller_server called customer_db gRPC CreateSeller and got UNIMPLEMENTED. \
+                         Usually wrong host:port in seller's CUSTOMER_DB_ADDRS (e.g. pointing at product_db \
+                         :50052 instead of customer_db :50051), or customer_db not running / wrong proto."
+                    );
+                }
             }
         }
         Commands::Login { name, password } => {

@@ -1,0 +1,5 @@
+# Minimal deps for python_customer_db on GCP VMs (faster than full repo requirements.txt)
+grpcio>=1.60
+grpcio-tools>=1.60
+pymysql>=1.1
+protobuf>=4.0

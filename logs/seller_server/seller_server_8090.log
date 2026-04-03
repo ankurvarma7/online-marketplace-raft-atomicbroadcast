@@ -1,0 +1,4 @@
+Customer DB replicas: ["127.0.0.1:50051", "127.0.0.1:50052", "127.0.0.1:50053", "127.0.0.1:50054", "127.0.0.1:50055"]
+Product DB peers: ["127.0.0.1:50052", "127.0.0.1:50053", "127.0.0.1:50054", "127.0.0.1:50055", "127.0.0.1:50056"]
+Seller Server (REST) listening on 0.0.0.0:8090
+[CustomerDB] Replica 0 unreachable, trying another

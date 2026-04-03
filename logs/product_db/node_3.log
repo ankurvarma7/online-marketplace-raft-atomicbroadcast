@@ -1,22 +1,2 @@
 connecting to product_db_3
-[2m2026-04-02T15:56:40.246376Z[0m [32m INFO[0m [2mproduct_db[0m[2m:[0m product_db node_id=3 listening on 127.0.0.1:50054 (DATA_DIR=logs/product_db_data/3)
-[2m2026-04-02T17:08:55.238417Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:08:55.238749Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:08:55.238770Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:08:55.238271Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:05.863673Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:05.879270Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:06.714114Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:06.714719Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:06.714913Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:06.715069Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:22.914087Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:22.918332Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:22.918669Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:13:22.918951Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:16:55.225959Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:16:55.294405Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:16:55.318539Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:16:55.339058Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:16:55.359308Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
-[2m2026-04-02T17:16:55.364853Z[0m [31mERROR[0m [2masync_raft::replication[0m[2m:[0m timeout while sending AppendEntries RPC to target [3merror[0m[2m=[0mdeadline has elapsed
+[2m2026-04-02T21:39:22.711763Z[0m [32m INFO[0m [2mproduct_db[0m[2m:[0m product_db node_id=3 listening on 127.0.0.1:50054 (DATA_DIR=/Users/ankurvarma/online-marketplace-raft-atomicbroadcast/logs/product_db_data/3)
