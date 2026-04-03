@@ -39,7 +39,7 @@ GRPC_BASE_PORT="${GRPC_BASE_PORT:-50051}"   # node N binds on BASE + N  → 5005
 # Defaults to a cluster of NUM_NODES nodes all on localhost.
 _default_peers=""
 for i in $(seq 1 "$NUM_NODES"); do
-    _default_peers="${_default_peers:+$_default_peers,}${i}=http://127.0.0.1:$((GRPC_BASE_PORT + i))"
+    _default_peers="${_default_peers:+$_default_peers,}${i}=http://0.0.0.0:$((GRPC_BASE_PORT + i))"
 done
 RAFT_PEERS="${RAFT_PEERS:-$_default_peers}"
 
@@ -155,7 +155,7 @@ case "$MODE" in
     mkdir -p "$LOG_DIR" "$PID_DIR"
 
     for node_id in $(seq 1 "$NUM_NODES"); do
-        bind_addr="127.0.0.1:$((GRPC_BASE_PORT + node_id))"
+        bind_addr="0.0.0.0:$((GRPC_BASE_PORT + node_id))"
         data_dir="${DATA_BASE_DIR}/${node_id}"
         start_node "$node_id" "$bind_addr" "$data_dir"
         echo ""
@@ -168,7 +168,7 @@ case "$MODE" in
     echo ""
     echo "Connect clients to any node (they will redirect to the leader):"
     for node_id in $(seq 1 "$NUM_NODES"); do
-        echo "  Node ${node_id}: http://127.0.0.1:$((GRPC_BASE_PORT + node_id))  (logs: ${LOG_DIR}/node_${node_id}.log)"
+        echo "  Node ${node_id}: http://0.0.0.0:$((GRPC_BASE_PORT + node_id))  (logs: ${LOG_DIR}/node_${node_id}.log)"
     done
     echo ""
     echo "To stop a node: NODE_ID=<n> $0 stop"
